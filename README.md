@@ -87,7 +87,7 @@ As a secondary benefit, this component supports:
                └── apaphx_ads1015.h
    ```
 
-2. Add configuration to your ESPHome YAML or use whole yaml example from library folder:
+2. Add configuration to your ESPHome YAML partialy or use whole yaml example from library folder:
    ```yaml
    # Example configuration for PHX-board
    external_components:
