@@ -1,0 +1,333 @@
+# ESPHome Configuration Example for PHX Pool Monitor
+# Comprehensive configuration demonstrating all features of the PHX-board
+
+################################
+# Basic ESPHome Configuration ##
+################################
+esphome:
+  name: phx-probe
+  friendly_name: PHX-poolmonitor
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# Enable detailed logging for troubleshooting
+logger:
+  level: DEBUG
+  logs:
+    adc.sensor: DEBUG
+    sensor: DEBUG
+    esp32.temperature: DEBUG
+  
+# API and OTA configuration
+api:
+  encryption:
+    key: "YOUR_ENCRYPTION_KEY"
+
+ota:
+  - platform: esphome
+    password: "YOUR_OTA_PASSWORD"
+
+# Network Configuration
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  manual_ip:
+    static_ip: 192.168.1.100
+    gateway: 192.168.1.1
+    subnet: 255.255.255.0
+  ap:
+    ssid: "Phx-Probe Fallback Hotspot"
+    password: "fallback-password"
+
+web_server:
+  port: 80
+
+################################
+# PHX Component Configuration ##
+################################
+external_components:
+  - source: components
+    components: [apaphx_ads1015]
+
+# Primary communication bus for PHX board
+i2c:
+  sda: GPIO21
+  scl: GPIO22
+  scan: true
+
+# Temperature sensor communication
+one_wire:
+  - platform: gpio
+    pin: GPIO32
+    id: hub_1
+
+################################
+# Input Sensors Configuration ##
+################################
+binary_sensor:
+  # Pool pump state monitoring
+  - platform: gpio
+    pin:
+      number: GPIO25
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "Pump Status"
+    id: pump_status
+    device_class: "power"
+    filters:
+      - delayed_on: 10s
+      - delayed_off: 0s
+
+  # Automatic calibration reminder
+  - platform: template
+    name: "Calibration Warning"
+    id: cal_warning
+    device_class: problem
+    lambda: |-
+      if (id(ph_cal_age).state > 40 || id(orp_cal_age).state > 40) {
+        return true;
+      }
+      return false;
+
+################################
+# Sensor Configurations #########
+################################
+sensor:
+  # System Health Monitoring
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 60s
+    entity_category: diagnostic
+
+  - platform: uptime
+    name: "Uptime"
+    update_interval: 60s
+    filters:
+      - lambda: return x / 3600.0;
+    unit_of_measurement: "h"
+    entity_category: diagnostic
+
+  # Temperature Monitoring with State Retention
+  - platform: template
+    name: "Temp Status"
+    id: temp_status
+    accuracy_decimals: 1
+    unit_of_measurement: "°C"
+    device_class: "temperature"
+    update_interval: 5s
+    lambda: |-
+      if (id(pump_status).state) {
+        if (id(pool_temp_raw).state) {
+          return id(pool_temp_raw).state;
+        }
+      }
+      return id(temp_status).state;
+
+  # Filter Pressure Monitoring
+  - platform: template
+    name: "Pressure Status"
+    id: pressure_status
+    unit_of_measurement: "bar"
+    accuracy_decimals: 1
+    icon: "mdi:gauge"
+    update_interval: 5s
+    device_class: "pressure"
+    lambda: |-
+      if (id(pump_status).state) {
+        return id(analog_pressure).state;
+      } else {
+        return id(pressure_status).state;
+      }
+
+  # Raw Pressure Sensor
+  - platform: adc
+    pin: GPIO33
+    id: analog_pressure
+    internal: true
+    update_interval: 5s
+    filters:
+      - median:
+          window_size: 10
+          send_every: 5
+          send_first_at: 5
+      - calibrate_linear:
+         - 0.5 -> 0
+         - 3.38775 -> 3.7
+
+  # Water Temperature Sensor
+  - platform: dallas_temp
+    one_wire_id: hub_1
+    id: pool_temp_raw
+    name: "Pool Temperature"
+    resolution: 11
+    update_interval: 5s
+    internal: true
+    filters:
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 2
+          send_first_at: 2
+      - filter_out: nan
+      - delta: 1.0
+      - heartbeat: 60s
+
+  # PHX Board Water Quality Measurements
+  - platform: apaphx_ads1015
+    name: "RAW pH Volts"
+    id: ph_voltage
+    address: 0x49
+    gain: 6
+    ema_alpha: 0.08
+    median_window: 7
+    update_interval: 5s
+    temperature_sensor: temp_status
+    pump_sensor: pump_status
+    
+    # pH Measurement
+    ph_sensor:
+      name: "pH Value"
+      id: ph_value
+      icon: "mdi:ph"
+      filters:
+        - delta: 0.05
+        - heartbeat: 30s
+    
+    # ORP Measurement
+    orp:
+      address: 0x48
+      gain: 2
+      orp_sensor:
+        name: "ORP Value"
+        id: orp_value
+        icon: "mdi:waves"
+        filters:
+          - delta: 1
+          - heartbeat: 30s
+      voltage_sensor:
+        name: "RAW ORP Volts"
+    
+    # Calibration Tracking
+    ph_calibration_age:
+      name: "pH Calibration Age"
+      id: ph_cal_age
+      filters:
+        - delta: 0.5
+    orp_calibration_age:
+      name: "ORP Calibration Age"
+      id: orp_cal_age
+      filters:
+        - delta: 0.5
+
+################################
+# Status Monitoring ############
+################################
+text_sensor:
+  # Calibration Process Status
+  - platform: template
+    name: "Calibration Status"
+    id: calibration_status
+    icon: mdi:flask
+
+  # Water Quality Status
+  - platform: template
+    name: "PHX Status"
+    icon: mdi:bell-alert-outline
+    lambda: |-
+      if (id(ph_value).state > 7.4) 
+        return {"pH High"};
+      if (id(ph_value).state < 7.1) 
+        return {"pH Low"};
+      if (id(orp_value).state < 650) 
+        return {"ORP Low"};
+      return {"OK"};
+
+  # Filter Maintenance Status
+  - platform: template
+    name: "Filter Pressure Status"
+    icon: mdi:gauge
+    update_interval: 60s
+    lambda: |-
+      if (id(analog_pressure).state > 2.0) 
+        return {"Critical - Immediate Backwash Required"};
+      if (id(analog_pressure).state > 1.5) 
+        return {"High Pressure - Schedule Backwash"};
+      if (id(analog_pressure).state > 1.2) 
+        return {"Elevated - Monitor Pressure"};
+      return {"Normal"};
+
+################################
+# Calibration Controls #########
+################################
+button:
+  # pH Calibration Controls
+  - platform: template
+    name: "Calibrate pH 4.0"
+    icon: mdi:test-tube
+    on_press:
+      - lambda: |-
+          id(calibration_status).publish_state("Starting pH 4.0 calibration...");
+      - calibrate_ph1:
+          id: ph_voltage
+          value: 4.0
+      - delay: 2s
+      - lambda: |-
+          id(calibration_status).publish_state("pH 4.0 calibration complete");
+
+  - platform: template
+    name: "Calibrate pH 7.0"
+    icon: mdi:test-tube
+    on_press:
+      - lambda: |-
+          id(calibration_status).publish_state("Starting pH 7.0 calibration...");
+      - calibrate_ph2:
+          id: ph_voltage
+          value: 7.0
+      - delay: 2s
+      - lambda: |-
+          id(calibration_status).publish_state("pH 7.0 calibration complete");
+
+  # ORP Calibration Controls
+  - platform: template
+    name: "Calibrate ORP 475mV"
+    icon: mdi:test-tube
+    on_press:
+      - lambda: |-
+          id(calibration_status).publish_state("Starting ORP 475mV calibration...");
+      - calibrate_orp1:
+          id: ph_voltage
+          value: 475
+      - delay: 2s
+      - lambda: |-
+          id(calibration_status).publish_state("ORP 475mV calibration complete");
+
+  - platform: template
+    name: "Calibrate ORP 650mV"
+    icon: mdi:test-tube
+    on_press:
+      - lambda: |-
+          id(calibration_status).publish_state("Starting ORP 650mV calibration...");
+      - calibrate_orp2:
+          id: ph_voltage
+          value: 650
+      - delay: 2s
+      - lambda: |-
+          id(calibration_status).publish_state("ORP 650mV calibration complete");
+
+  # System Controls
+  - platform: template
+    name: "Reset Calibration"
+    icon: mdi:restart
+    on_press:
+      - lambda: |-
+          id(calibration_status).publish_state("Resetting calibration...");
+      - reset_calibration:
+          id: ph_voltage
+      - delay: 1s
+      - lambda: |-
+          id(calibration_status).publish_state("Calibration reset complete");
+
+  - platform: restart
+    name: "Restart Device"
