@@ -198,9 +198,3 @@ Contributions are welcome! Please submit pull requests with:
 
 ## License
 This component is released under the MIT License.
-
-## Acknowledgments
-- APA Devices for PHX-board hardware design
-- ESPHome community for testing and feedback
-- ADS1015 driver contributors
-- Home Assistant community for integration testing
